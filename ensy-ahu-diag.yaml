@@ -1,63 +1,147 @@
-# Remote diagnostics: every board posts a short plain-text status to a public ntfy.sh
-# topic (subscribe: https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256), so a board on
-# someone else's network can be debugged without them doing anything.
-# Sent 3 min and 30 min after boot, then every 6 h. Contains only board/AHU state
-# (MAC suffix, firmware, Modbus values, recent warnings), no WiFi names, IPs or keys.
-# The topic is in the public binary: anyone who finds it can read the reports.
+# Remote diagnostics: every board posts a plain-text status (every register entity,
+# a direct read of H1001-1004, recent warnings) to a public ntfy.sh topic, so a board
+# on someone else's network can be debugged without them doing anything.
+#   Reports: https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256 (open or subscribe)
+#   Sent:    3 min and 30 min after boot, every 6 h, at most every 10 min while new
+#            Modbus warnings / errors appear, and on request.
+#   Request: publish "report" (all boards) or "report <board id>" (e.g. "report 8f8934")
+#            to https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256-cmd; boards check every minute:
+#              curl -d report ntfy.sh/ensy-ahu-diag-bc93a934e56cb256-cmd
+#            "report" is the only command: nothing can be changed this way.
+# No WiFi names, keys or IPs (IPs in log lines are masked). The topics are in the public
+# binary: anyone who finds them can read reports or ask for one.
 # Remove this package from ensy-ahu.yaml to stop it.
 
 substitutions:
   diag_url: https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256
 
 globals:
-  - id: diag_warns                # last WARN/ERROR log lines, newest last
+  - id: diag_board                # last 3 MAC bytes, e.g. "8f8934"
+    type: std::string
+  - id: diag_warns                # last 10 WARN/ERROR log lines, newest last
     type: std::vector<std::string>
   - id: diag_warn_count
     type: uint32_t
     initial_value: "0"
+  - id: diag_urgent               # a Modbus warning or any error since the last report
+    type: bool
+    initial_value: "false"
   - id: diag_raw                  # direct read of holding 1001-1004, done before each report
     type: std::string
     initial_value: '"-"'
   - id: diag_reports
     type: int
     initial_value: "0"
+  - id: diag_last_min             # uptime (min) of the last report
+    type: uint32_t
+    initial_value: "0"
+  - id: diag_reason               # why the next report is sent; "" = none due
+    type: std::string
+  - id: diag_cmd_since            # ntfy "since" for the command topic: last seen message id
+    type: std::string
+    initial_value: '"90s"'
 
 logger:
   on_message:
     - level: WARN
       then:
         - lambda: |-
-            // Strip ANSI colours, keep the last 10 lines (160 chars each).
+            // Strip ANSI colours and mask IPv4 addresses; keep 160 chars.
             std::string s;
             for (const char *p = message; *p && s.size() < 160; p++) {
               if (*p == '\033') { while (*p && *p != 'm') p++; if (!*p) break; continue; }
               if ((unsigned char) *p >= 0x20) s += *p;
             }
+            for (size_t i = 0; i < s.size(); i++) {
+              if (!isdigit((unsigned char) s[i]) || (i && (isdigit((unsigned char) s[i - 1]) || s[i - 1] == '.'))) continue;
+              size_t j = i; int dots = 0;
+              while (j < s.size() && (isdigit((unsigned char) s[j]) || (s[j] == '.' && dots < 3 && ++dots))) j++;
+              if (dots == 3 && isdigit((unsigned char) s[j - 1])) { s.replace(i, j - i, "x.x.x.x"); i += 6; }
+            }
             auto &w = id(diag_warns);
             if (w.size() >= 10) w.erase(w.begin());
             w.push_back(s);
             id(diag_warn_count)++;
+            if (level <= ESPHOME_LOG_LEVEL_ERROR || (strncmp(tag, "modbus", 6) == 0 && !strstr(message, "took a long time")))
+              id(diag_urgent) = true;
 
 interval:
   - interval: 60s
     then:
+      - lambda: |-
+          if (id(diag_board).empty()) {
+            uint8_t m[6];
+            get_mac_address_raw(m);
+            char b[8];
+            snprintf(b, sizeof(b), "%02x%02x%02x", m[3], m[4], m[5]);
+            id(diag_board) = b;
+          }
+          uint32_t up = millis() / 60000, since = up - id(diag_last_min);
+          int n = id(diag_reports);
+          id(diag_reason) = n == 0 ? (up >= 3 ? "boot" : "")
+                          : n == 1 && up >= 30 && since >= 10 ? "boot +30 min"
+                          : since >= 360 ? "periodic"
+                          : id(diag_urgent) && since >= 10 ? "new warnings" : "";
       - if:
           condition:
-            lambda: |-
-              static uint32_t last = 0;
-              uint32_t up = millis() / 60000;   // minutes
-              int n = id(diag_reports);
-              bool due = n == 0 ? up >= 3 : n == 1 ? up >= 30 : up - last >= 360;
-              if (due) last = up;
-              return due;
+            lambda: 'return !id(diag_reason).empty();'
           then:
-            - script.execute: diag_report
+            - script.execute:
+                id: diag_report
+                reason: !lambda 'return id(diag_reason);'
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.get:
+                url: !lambda 'return std::string("${diag_url}-cmd/json?poll=1&since=") + id(diag_cmd_since);'
+                capture_response: true
+                max_response_buffer_size: 2048
+                on_response:
+                  then:
+                    - lambda: |-
+                        // One JSON object per line; act on {"event":"message","message":"report[ <board>]"}.
+                        if (response->status_code != 200) return;
+                        bool hit = false;
+                        size_t pos = 0;
+                        while (pos < body.size()) {
+                          size_t end = body.find('\n', pos);
+                          if (end == std::string::npos) end = body.size();
+                          std::string line = body.substr(pos, end - pos);
+                          pos = end + 1;
+                          auto field = [&](const char *key) -> std::string {
+                            std::string k = std::string("\"") + key + "\":\"";
+                            size_t a = line.find(k);
+                            if (a == std::string::npos) return "";
+                            a += k.size();
+                            size_t b = line.find('"', a);
+                            return b == std::string::npos ? "" : line.substr(a, b - a);
+                          };
+                          std::string mid = field("id");
+                          if (!mid.empty()) id(diag_cmd_since) = mid;
+                          if (field("event") != "message") continue;
+                          std::string msg = field("message");
+                          if (msg == "report" || msg == "report " + id(diag_board)) hit = true;
+                        }
+                        if (hit) id(diag_reason) = "requested";
+                    - if:
+                        condition:
+                          lambda: 'return id(diag_reason) == "requested";'
+                        then:
+                          - script.execute:
+                              id: diag_report
+                              reason: "requested"
 
 script:
   - id: diag_report
     mode: single
+    parameters:
+      reason: string
     then:
       - lambda: |-
+          id(diag_reports)++;
+          id(diag_last_min) = millis() / 60000;
+          id(diag_urgent) = false;
           id(diag_raw) = "no reply";
           id(ensy)->queue_command(modbus_controller::ModbusCommandItem::create_read_command(
               id(ensy), modbus::EntityType::HOLDING, 1001, 4,
@@ -75,29 +159,35 @@ script:
           url: ${diag_url}
           request_headers:
             Title: !lambda |-
-              uint8_t m[6];
-              get_mac_address_raw(m);
-              static char t[48];
-              snprintf(t, sizeof(t), "ensy %02x%02x%02x fw %s", m[3], m[4], m[5], ESPHOME_PROJECT_VERSION);
+              static char t[80];
+              snprintf(t, sizeof(t), "ensy %s fw %s: %s", id(diag_board).c_str(), ESPHOME_PROJECT_VERSION, reason.c_str());
               return t;
           body: !lambda |-
-            id(diag_reports)++;
             std::string r;
             char b[160];
             auto add = [&](const char *fmt, auto... a) { snprintf(b, sizeof(b), fmt, a...); r += b; r += '\n'; };
             auto *c = id(ventilation);
             add("esphome %s, uptime %u min, report #%d", ESPHOME_VERSION, (unsigned) (millis() / 60000), id(diag_reports));
-            add("wifi rssi %d, api %s", (int) id(wifi_id).wifi_rssi(), id(api_id).is_connected() ? "connected" : "not connected");
-            add("modbus offline %d", (int) id(ensy)->get_module_offline());
-            add("climate mode %d, target %.2f, current %.2f, rh %.1f",
-                (int) c->mode, c->target_temperature, c->current_temperature, c->current_humidity);
-            add("setpoint_num has_state %d, state %.2f", (int) id(setpoint_num).has_state(), id(setpoint_num).state);
-            add("power has_state %d, state %d", (int) id(power_sw).has_state(), (int) id(power_sw).state);
-            auto mi = id(mode_sel).active_index();
-            auto fi = id(fan_sel).active_index();
-            add("mode idx %d, fan idx %d", mi.has_value() ? (int) *mi : -1, fi.has_value() ? (int) *fi : -1);
-            add("state '%s'", id(state_txt).get_state().c_str());
+            add("wifi rssi %d, api %s, modbus offline %d", (int) id(wifi_id).wifi_rssi(),
+                id(api_id).is_connected() ? "connected" : "not connected", (int) id(ensy)->get_module_offline());
+            add("climate mode %d, fan %d, target %.2f, current %.2f, rh %.1f", (int) c->mode,
+                c->fan_mode.has_value() ? (int) *c->fan_mode : -1, c->target_temperature, c->current_temperature,
+                c->current_humidity);
             add("raw H1001-1004: %s", id(diag_raw).c_str());
             add("warnings since boot: %u", (unsigned) id(diag_warn_count));
             for (auto &w : id(diag_warns)) { r += "  "; r += w; r += '\n'; }
+            // Every entity, internal ones included; "?" = never received a value.
+            r += "-- entities --\n";
+            for (auto *e : App.get_sensors())
+              if (e->has_state()) add("%s: %.2f", e->get_name().c_str(), e->state); else add("%s: ?", e->get_name().c_str());
+            for (auto *e : App.get_numbers())
+              if (e->has_state()) add("%s: %.2f", e->get_name().c_str(), e->state); else add("%s: ?", e->get_name().c_str());
+            for (auto *e : App.get_selects())
+              add("%s: %s", e->get_name().c_str(), e->has_state() ? e->current_option().c_str() : "?");
+            for (auto *e : App.get_switches())
+              add("%s: %s", e->get_name().c_str(), e->state ? "on" : "off");
+            for (auto *e : App.get_binary_sensors())
+              add("%s: %s", e->get_name().c_str(), !e->has_state() ? "?" : e->state ? "on" : "off");
+            for (auto *e : App.get_text_sensors())
+              add("%s: %s", e->get_name().c_str(), e->has_state() ? e->get_state().c_str() : "?");
             return r;
