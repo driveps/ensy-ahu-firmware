@@ -90,6 +90,8 @@ http_request:
   verify_ssl: true
   buffer_size_rx: 4096            # GitHub's release redirect headers overflow the 512 B default
   buffer_size_tx: 1024
+  buffer_size_rx: 4096            # GitHub's release redirect headers overflow the 512 B default
+  buffer_size_tx: 1024
 
 ota:
   - platform: esphome

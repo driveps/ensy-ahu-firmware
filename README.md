@@ -52,4 +52,5 @@ packages:
 | `ensy-ahu-core.yaml` | AHU logic: Modbus, entities, climate, status LED |
 | `ensy-ahu-debug.yaml` | Read-only sensors for undocumented registers, plus a change tracker |
 | `components/ensy_climate` | The grouped "Ventilation" climate entity |
+| `docs/user-guide.md` | Plain-language setup and troubleshooting for owners |
 | `docs/` | Register map, scan results, CO2 options |
