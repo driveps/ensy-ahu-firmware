@@ -1,7 +1,9 @@
 #pragma once
 // Ensy LMC311 climate — see climate.py. Mode/fan/preset map:
-//   OFF = power (1001) off; HEAT/COOL/AUTO = power on + mode select (1002)
-//   fan OFF/LOW/MEDIUM/HIGH = fan step (1003) 0..3
+//   HEAT/COOL/AUTO = power (1001) on + mode select (1002) 1..3
+//   fan LOW/MEDIUM/HIGH = fan step (1003) 1..3
+//   No OFF mode/fan to pick: the LMC311 can't be switched off that way (not even
+//   from the wall panel). If the AHU reports off / step 0 anyway, that is shown.
 //   preset BOOST / "Cooker hood" = party mode (551) with countdown (550) from
 //   the Boost length / Cooker hood length numbers; NONE = stop party mode.
 // The AHU has one boost: "Cooker hood" is just a boost we remember starting
@@ -75,10 +77,8 @@ class EnsyClimate : public climate::Climate, public Component {
     climate::ClimateTraits t;
     t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_CURRENT_HUMIDITY |
                         climate::CLIMATE_SUPPORTS_ACTION);
-    t.set_supported_modes({climate::CLIMATE_MODE_OFF, climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL,
-                           climate::CLIMATE_MODE_AUTO});
-    t.set_supported_fan_modes({climate::CLIMATE_FAN_OFF, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM,
-                               climate::CLIMATE_FAN_HIGH});
+    t.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL, climate::CLIMATE_MODE_AUTO});
+    t.set_supported_fan_modes({climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM, climate::CLIMATE_FAN_HIGH});
     t.set_supported_presets({climate::CLIMATE_PRESET_NONE, climate::CLIMATE_PRESET_BOOST});
     return t;
   }
@@ -86,28 +86,18 @@ class EnsyClimate : public climate::Climate, public Component {
   void control(const climate::ClimateCall &call) override {
     if (call.get_mode().has_value()) {
       auto m = *call.get_mode();
-      if (m == climate::CLIMATE_MODE_OFF) {
-        power_->turn_off();
-      } else {
-        const char *opt = m == climate::CLIMATE_MODE_HEAT ? "Heat" : m == climate::CLIMATE_MODE_COOL ? "Cool" : "Auto";
-        if (mode_->current_option() != opt)
-          mode_->make_call().set_option(opt).perform();
-        if (!power_->state)
-          power_->turn_on();
-      }
+      const char *opt = m == climate::CLIMATE_MODE_HEAT ? "Heat" : m == climate::CLIMATE_MODE_COOL ? "Cool" : "Auto";
+      if (mode_->current_option() != opt)
+        mode_->make_call().set_option(opt).perform();
+      if (!power_->state)
+        power_->turn_on();
     }
     if (call.get_target_temperature().has_value())
       setpoint_->make_call().set_value(*call.get_target_temperature()).perform();
     if (call.get_fan_mode().has_value()) {
-      static const char *const steps[] = {"Off", "Step 1", "Step 2", "Step 3"};
-      int i = 0;
-      switch (*call.get_fan_mode()) {
-        case climate::CLIMATE_FAN_LOW: i = 1; break;
-        case climate::CLIMATE_FAN_MEDIUM: i = 2; break;
-        case climate::CLIMATE_FAN_HIGH: i = 3; break;
-        default: i = 0;
-      }
-      fan_->make_call().set_option(steps[i]).perform();
+      auto f = *call.get_fan_mode();
+      const char *step = f == climate::CLIMATE_FAN_HIGH ? "Step 3" : f == climate::CLIMATE_FAN_MEDIUM ? "Step 2" : "Step 1";
+      fan_->make_call().set_option(step).perform();
     }
     if (call.has_custom_preset()) {
       if (call.get_custom_preset() == PRESET_COOKER_HOOD)

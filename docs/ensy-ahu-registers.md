@@ -161,10 +161,10 @@ Every register in the manual answered, except **input 2202, which is illegal**. 
 |---|---|---|---|
 | input | 107, 108, 109, 110, 113 | 0 | more digital inputs, after 100–106 |
 | input | 216, 218, 219, 220 | 0 | more temperature/analog channels, unfitted |
-| input | 232 | 0 | third fan speed/step, after 230/231 |
+| input | 232 | 0 | **air-quality override** (2026-10-11): 2 while humidity forces fan step 3, else 0. Not the panel's Air quality mode setting |
 | holding | 104 | 0 | output (gap in 100–106) |
 | holding | 107–125, 127, 128 | 0 except 127 = 1 | more outputs/relays |
-| holding | 133 | 0 | output after 130–132 (rotor/supply/exhaust) |
+| holding | 133 | 0 | **rotor drive %** ÷100 (2026-10-11): 10000 whenever the Rotor output (130) is on. Not the panel's Rotor max % setting |
 | holding | 140, 141, 142 | 0, 3, 15 | ? |
 | holding | 203, 204 | 0 | analog outputs after 200–202 (fans, heater) |
 | holding | 1000 | 2 | ? (precedes RunSet 1001) |
@@ -183,3 +183,20 @@ The "Air pressure 2" (input 2202) entity was removed because that register doesn
 
 Settings that changed since the 2026-10-08 scan: 601 User1 function 2 → 3 (Inlet → Exhaust),
 612 User2 time 0 → 10 min, 1912 RH_LimLo 0 → 3000 (30 %), 550 boost countdown = 120.
+
+## Wide sweep 0–65535 and protocol probes (2026-10-11 evening)
+
+`ensy-ahu-fullscan.yaml` was extended. It's still read-only and still one register per request.
+
+- **FC04 and FC03, 0–65535:** the same 160 registers as the 0–9999 sweep. Every other address
+  returns exception 2. There were no timeouts and no other exception codes.
+  **Holding 10000+ isn't an input mirror on this firmware**, despite what the manual says: it's illegal too.
+- **FC01/FC02** (coils, discrete inputs), **FC07** (exception status), **FC11** (slave ID) and **FC2B/0E**
+  (device identification): all return exception 1, illegal function.
+- **FC14** (file record) and **FC18** (FIFO): no reply.
+- **Other slave IDs 1–247:** nothing answers. The LMC311 is alone on COM1.
+
+So COM1 (CN7 pins 2/3) exposes exactly these 160 registers. In HA history, changing Air quality
+mode and Rotor max % on the panel changed none of them, so those settings aren't readable on COM1.
+To be confirmed with the fullscan diff monitor, which watches all 160. The only remaining source is the panel
+bus, COM2 (CN7 pins 4/5): sniff it listen-only while changing the settings.

@@ -1,5 +1,6 @@
 # Debug package: registers that exist (2026-10-11 sweep) but aren't in the LMC311 manual,
-# plus the "Last register change" tracker. Home board only. See docs/ensy-ahu-registers.md.
+# plus the "Last register change" tracker. Home board only: included by the local
+# dashboard stub (../ensy-ahu.yaml), not by ensy-ahu.yaml, so releases skip it. See docs/ensy-ahu-registers.md.
 
 script:
   # Debug: record changes of the "Debug" registers ("H1100: 1 → 0").

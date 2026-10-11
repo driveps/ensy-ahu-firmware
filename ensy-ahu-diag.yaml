@@ -1,0 +1,103 @@
+# Remote diagnostics: every board posts a short plain-text status to a public ntfy.sh
+# topic (subscribe: https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256), so a board on
+# someone else's network can be debugged without them doing anything.
+# Sent 3 min and 30 min after boot, then every 6 h. Contains only board/AHU state
+# (MAC suffix, firmware, Modbus values, recent warnings), no WiFi names, IPs or keys.
+# The topic is in the public binary: anyone who finds it can read the reports.
+# Remove this package from ensy-ahu.yaml to stop it.
+
+substitutions:
+  diag_url: https://ntfy.sh/ensy-ahu-diag-bc93a934e56cb256
+
+globals:
+  - id: diag_warns                # last WARN/ERROR log lines, newest last
+    type: std::vector<std::string>
+  - id: diag_warn_count
+    type: uint32_t
+    initial_value: "0"
+  - id: diag_raw                  # direct read of holding 1001-1004, done before each report
+    type: std::string
+    initial_value: '"-"'
+  - id: diag_reports
+    type: int
+    initial_value: "0"
+
+logger:
+  on_message:
+    - level: WARN
+      then:
+        - lambda: |-
+            // Strip ANSI colours, keep the last 10 lines (160 chars each).
+            std::string s;
+            for (const char *p = message; *p && s.size() < 160; p++) {
+              if (*p == '\033') { while (*p && *p != 'm') p++; if (!*p) break; continue; }
+              if ((unsigned char) *p >= 0x20) s += *p;
+            }
+            auto &w = id(diag_warns);
+            if (w.size() >= 10) w.erase(w.begin());
+            w.push_back(s);
+            id(diag_warn_count)++;
+
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              static uint32_t last = 0;
+              uint32_t up = millis() / 60000;   // minutes
+              int n = id(diag_reports);
+              bool due = n == 0 ? up >= 3 : n == 1 ? up >= 30 : up - last >= 360;
+              if (due) last = up;
+              return due;
+          then:
+            - script.execute: diag_report
+
+script:
+  - id: diag_report
+    mode: single
+    then:
+      - lambda: |-
+          id(diag_raw) = "no reply";
+          id(ensy)->queue_command(modbus_controller::ModbusCommandItem::create_read_command(
+              id(ensy), modbus::EntityType::HOLDING, 1001, 4,
+              [](modbus::EntityType, uint16_t, std::span<const uint8_t> data) {
+                std::string s;
+                char b[8];
+                for (size_t i = 0; i + 1 < data.size(); i += 2) {
+                  snprintf(b, sizeof(b), "%s%u", i ? " " : "", (unsigned) ((data[i] << 8) | data[i + 1]));
+                  s += b;
+                }
+                id(diag_raw) = s;
+              }));
+      - delay: 10s
+      - http_request.post:
+          url: ${diag_url}
+          request_headers:
+            Title: !lambda |-
+              uint8_t m[6];
+              get_mac_address_raw(m);
+              static char t[48];
+              snprintf(t, sizeof(t), "ensy %02x%02x%02x fw %s", m[3], m[4], m[5], ESPHOME_PROJECT_VERSION);
+              return t;
+          body: !lambda |-
+            id(diag_reports)++;
+            std::string r;
+            char b[160];
+            auto add = [&](const char *fmt, auto... a) { snprintf(b, sizeof(b), fmt, a...); r += b; r += '\n'; };
+            auto *c = id(ventilation);
+            add("esphome %s, uptime %u min, report #%d", ESPHOME_VERSION, (unsigned) (millis() / 60000), id(diag_reports));
+            add("wifi rssi %d, api %s", (int) id(wifi_id).wifi_rssi(), id(api_id).is_connected() ? "connected" : "not connected");
+            add("modbus offline %d", (int) id(ensy)->get_module_offline());
+            add("climate mode %d, target %.2f, current %.2f, rh %.1f",
+                (int) c->mode, c->target_temperature, c->current_temperature, c->current_humidity);
+            add("setpoint_num has_state %d, state %.2f", (int) id(setpoint_num).has_state(), id(setpoint_num).state);
+            add("power has_state %d, state %d", (int) id(power_sw).has_state(), (int) id(power_sw).state);
+            auto mi = id(mode_sel).active_index();
+            auto fi = id(fan_sel).active_index();
+            add("mode idx %d, fan idx %d", mi.has_value() ? (int) *mi : -1, fi.has_value() ? (int) *fi : -1);
+            add("state '%s'", id(state_txt).get_state().c_str());
+            add("raw H1001-1004: %s", id(diag_raw).c_str());
+            add("warnings since boot: %u", (unsigned) id(diag_warn_count));
+            for (auto &w : id(diag_warns)) { r += "  "; r += w; r += '\n'; }
+            return r;

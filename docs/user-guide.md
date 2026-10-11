@@ -95,7 +95,7 @@ Close the unit and switch the breaker back on.
 
 ## 6. What you get in Home Assistant
 
-- **Ventilation**: the main control. Turn it off or on, pick the mode, set the
+- **Ventilation**: the main control. Pick the mode (Heat / Cool / Auto), set the
   temperature, and set the fan to Low / Medium / High.
 - **Boost**: runs the fans at full speed for a while (2 hours by default), then
   returns to normal.

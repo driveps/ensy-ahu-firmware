@@ -48,7 +48,7 @@ esphome:
 
 packages:
   core: !include ensy-ahu-core.yaml
-  debug: !include ensy-ahu-debug.yaml
+  diag: !include ensy-ahu-diag.yaml   # remote status reports to ntfy.sh (see file)
 
 globals:
   - id: ota_pw
