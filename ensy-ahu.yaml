@@ -94,7 +94,7 @@ http_request:
 ota:
   - platform: esphome
     id: local_ota
-    password: ""                  # compiles the auth path; real password set in on_boot
+    password: ${ota_password}     # "" in CI (compiles the auth path only); on_boot sets the real one
   - platform: http_request
 
 update:
