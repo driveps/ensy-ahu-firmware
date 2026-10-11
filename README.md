@@ -4,6 +4,8 @@ ESPHome firmware for a LilyGO T-CAN485 that bridges an Ensy AHU-400 (LMC311 cont
 Modbus RTU on CN7) to Home Assistant over WiFi. One firmware for every board; nothing
 in it is device- or owner-specific.
 
+**Setting one up at home? Read the [user guide](docs/user-guide.md)**: wiring, WiFi, what the LED colours mean.
+
 ## How it works
 
 - **Releases:** every push to `main` that changes the firmware is built by CI and
