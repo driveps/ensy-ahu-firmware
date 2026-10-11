@@ -32,9 +32,12 @@ Inside the unit, find the controller board (LMC311). You need two of its connect
 |---|---|---|
 | **CN2 pin 1** | 12 V power | **VIN** (power in) |
 | **CN2 pin 2** | Ground | **GND** |
-| **CN7 pin 2** | Data A | **A** (RS485 terminal) |
-| **CN7 pin 3** | Data B | **B** (RS485 terminal) |
+| **CN7 pin 2** | Data A | **A** (RS485 terminal) pin 1 |
+| **CN7 pin 3** | Data B | **B** (RS485 terminal) pin 3 |
 
+![schema](img/schema.jpg)
+
+- leave terminal RS485 middle pin empty
 - **Leave CN7 pins 4 and 5 alone.** They go to the wall panel.
 - Don't swap A and B. If you do, nothing breaks, but the LED stays **yellow**
   (see section 5).
