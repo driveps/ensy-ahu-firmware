@@ -1,0 +1,537 @@
+# Debug package: registers that exist (2026-10-11 sweep) but aren't in the LMC311 manual,
+# plus the "Last register change" tracker. Home board only. See docs/ensy-ahu-registers.md.
+
+script:
+  # Debug: record changes of the "Debug" registers ("H1100: 1 → 0").
+  # The first value after boot is only remembered, not reported.
+  - id: reg_changed
+    mode: queued
+    max_runs: 60
+    parameters:
+      reg: string
+      val: float
+    then:
+      - lambda: |-
+          static std::map<std::string, int> last;
+          int v = (int) val;
+          auto it = last.find(reg);
+          if (it == last.end()) { last[reg] = v; return; }
+          if (it->second == v) return;
+          std::string msg = reg + ": " + std::to_string(it->second) + " → " + std::to_string(v);
+          it->second = v;
+          ESP_LOGI("ensy", "register change %s", msg.c_str());
+          id(last_reg_change).publish_state(msg);
+
+
+sensor:
+  # Debug: registers that exist (2026-10-11 sweep) but aren't in the LMC311 manual.
+  # Raw signed values, read-only. Change one panel setting at a time and watch
+  # "Last register change" to see which register it maps to. See docs/ensy-ahu-registers.md.
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I107"
+    register_type: read
+    address: 107
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I107", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I108"
+    register_type: read
+    address: 108
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I108", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I109"
+    register_type: read
+    address: 109
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I109", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I110"
+    register_type: read
+    address: 110
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I110", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I113"
+    register_type: read
+    address: 113
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I113", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I216"
+    register_type: read
+    address: 216
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I216", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I218"
+    register_type: read
+    address: 218
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I218", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I219"
+    register_type: read
+    address: 219
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I219", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I220"
+    register_type: read
+    address: 220
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I220", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug I232"
+    register_type: read
+    address: 232
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "I232", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H104"
+    register_type: holding
+    address: 104
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H104", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H107"
+    register_type: holding
+    address: 107
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H107", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H108"
+    register_type: holding
+    address: 108
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H108", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H109"
+    register_type: holding
+    address: 109
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H109", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H110"
+    register_type: holding
+    address: 110
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H110", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H111"
+    register_type: holding
+    address: 111
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H111", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H112"
+    register_type: holding
+    address: 112
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H112", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H113"
+    register_type: holding
+    address: 113
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H113", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H114"
+    register_type: holding
+    address: 114
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H114", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H115"
+    register_type: holding
+    address: 115
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H115", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H116"
+    register_type: holding
+    address: 116
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H116", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H117"
+    register_type: holding
+    address: 117
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H117", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H118"
+    register_type: holding
+    address: 118
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H118", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H119"
+    register_type: holding
+    address: 119
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H119", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H120"
+    register_type: holding
+    address: 120
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H120", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H121"
+    register_type: holding
+    address: 121
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H121", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H122"
+    register_type: holding
+    address: 122
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H122", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H123"
+    register_type: holding
+    address: 123
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H123", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H124"
+    register_type: holding
+    address: 124
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H124", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H125"
+    register_type: holding
+    address: 125
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H125", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H127"
+    register_type: holding
+    address: 127
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H127", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H128"
+    register_type: holding
+    address: 128
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H128", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H133"
+    register_type: holding
+    address: 133
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H133", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H140"
+    register_type: holding
+    address: 140
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H140", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H141"
+    register_type: holding
+    address: 141
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H141", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H142"
+    register_type: holding
+    address: 142
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H142", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H203"
+    register_type: holding
+    address: 203
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H203", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H204"
+    register_type: holding
+    address: 204
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H204", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1000"
+    register_type: holding
+    address: 1000
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1000", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1100"
+    register_type: holding
+    address: 1100
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1100", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1101"
+    register_type: holding
+    address: 1101
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1101", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1102"
+    register_type: holding
+    address: 1102
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1102", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1103"
+    register_type: holding
+    address: 1103
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1103", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1104"
+    register_type: holding
+    address: 1104
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1104", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1200"
+    register_type: holding
+    address: 1200
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1200", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1700"
+    register_type: holding
+    address: 1700
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1700", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1701"
+    register_type: holding
+    address: 1701
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1701", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H1800"
+    register_type: holding
+    address: 1800
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H1800", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H2001"
+    register_type: holding
+    address: 2001
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H2001", val: !lambda "return x;"}
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Debug H2200"
+    register_type: holding
+    address: 2200
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    on_value:
+      - script.execute: {id: reg_changed, reg: "H2200", val: !lambda "return x;"}
+
+
+text_sensor:
+  - platform: template
+    id: last_reg_change
+    name: "Last register change"  # fed by the Debug sensors via script reg_changed
+    icon: mdi:magnify-scan
+    entity_category: diagnostic

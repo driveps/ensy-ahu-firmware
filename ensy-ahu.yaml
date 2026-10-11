@@ -1,0 +1,113 @@
+# Ensy AHU-400 (LMC311) → Home Assistant bridge on a LilyGO T-CAN485.
+# One firmware for every board. It ships with no credentials:
+#   WiFi    set on site: the board opens AP "Ensy AHU setup" + captive portal
+#           whenever it has no working WiFi.
+#   API     encrypted; the key is provisioned by the owner's Home Assistant on adoption
+#           (within 24 h of power-up). That key also authorises OTA uploads.
+#   Updates every push to main is built by CI and published as a GitHub release;
+#           boards pull it (every 6 h) and install it automatically.
+#   Local   push OTA works only on a board that once got a local build with
+#           `ota_password` set (it stores it). CI builds carry no password, so on any
+#           other board push OTA is locked with a random per-boot password.
+# The released binary is public: nothing in it may be secret (the AP password is not).
+
+substitutions:
+  name: ensy-ahu
+  friendly_name: Ensy AHU-400
+  fw_version: dev                 # CI sets the release version; "dev" = local build, never auto-updated
+  components_path: components     # overridden by the local dashboard stub
+  ota_password: ""                # local builds only (from the stub's secrets); never set in CI
+  update_source: https://github.com/driveps/ensy-ahu-firmware/releases/latest/download/manifest.json
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  project:
+    name: driveps.ensy-ahu
+    version: ${fw_version}
+  on_boot:
+    priority: 600                 # before the OTA server starts listening
+    then:
+      - lambda: |-
+          // Push-OTA password: a local build stores its password; CI builds use the
+          // stored one, or a random one (= push OTA locked) on boards that never had one.
+          static const char *compiled = "${ota_password}";
+          auto &st = id(ota_pw);
+          if (compiled[0] && strncmp(st.data(), compiled, st.size() - 1) != 0) {
+            strncpy(st.data(), compiled, st.size() - 1);
+            st[st.size() - 1] = 0;
+          }
+          std::string pw(st.data());
+          if (pw.empty()) {
+            char buf[33];
+            for (int i = 0; i < 4; i++) snprintf(buf + i * 8, 9, "%08" PRIx32, random_uint32());
+            pw = buf;
+            ESP_LOGI("ensy", "push OTA locked (no local password stored)");
+          }
+          id(local_ota)->set_auth_password(pw);
+
+packages:
+  core: !include ensy-ahu-core.yaml
+  debug: !include ensy-ahu-debug.yaml
+
+globals:
+  - id: ota_pw
+    type: std::array<char, 33>
+    restore_value: true
+
+api:
+  id: api_id
+  encryption: {}                  # no key in the firmware: Home Assistant provisions it
+  actions:
+    # Debug: raw FC16 write, callable from HA (esphome.ensy_ahu_write_registers).
+    # Never use on holding 0 or 1007.
+    - action: write_registers
+      variables:
+        address: int
+        values: int[]
+      then:
+        - lambda: |-
+            if (address == 0 || address == 1007) { ESP_LOGW("ensy", "refusing write to %d", address); return; }
+            std::vector<uint16_t> v(values.begin(), values.end());
+            ESP_LOGI("ensy", "raw write %d x%u", address, (unsigned) v.size());
+            id(ensy)->queue_command(modbus_controller::ModbusCommandItem::create_write_multiple_command(
+                id(ensy), address, v.size(), v));
+
+wifi:
+  id: wifi_id
+  ap:
+    ssid: "Ensy AHU setup"
+    password: "ensy-ahu-setup"    # public (it's in this repo); only up while the board has no WiFi
+
+captive_portal:
+
+# Unadopted boards accept a new API key (which also authorises OTA uploads) only for
+# 24 h after power-up; after that, power-cycle the AHU to reopen setup.
+provisioning:
+  timeout: 24h
+
+http_request:
+  verify_ssl: true
+
+ota:
+  - platform: esphome
+    id: local_ota
+    password: ""                  # compiles the auth path; real password set in on_boot
+  - platform: http_request
+
+update:
+  - platform: http_request
+    id: fw_update
+    name: "Firmware"
+    source: ${update_source}
+    update_interval: 6h
+    on_update_available:
+      - if:
+          condition:
+            lambda: 'return strcmp(ESPHOME_PROJECT_VERSION, "dev") != 0;'
+          then:
+            - logger.log: "New firmware release, installing"
+            - update.perform:
+                id: fw_update
+          else:
+            - logger.log: "New firmware release; local build, install it from HA when ready"

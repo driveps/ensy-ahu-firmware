@@ -1,0 +1,1068 @@
+# Shared core for every Ensy AHU-400 (LMC311) bridge on a LilyGO T-CAN485.
+# Included as a package by ensy-ahu.yaml.
+# Expects the including file to define: wifi (id wifi_id), api (id api_id).
+# Register map + scan results: docs/ensy-ahu-registers.md.
+# Excluded on purpose: holding 0 (bus address) and 1007 (factory preset) = dangerous;
+# input 204-206, 208, 210-214 = not fitted / duplicate on this unit.
+
+external_components:
+  - source:
+      type: local
+      path: ${components_path}       # ensy_climate: the grouped "Ventilation" thermostat
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  baud_rate: 0   # free UART0; logs over WiFi/OTA only (Modbus owns the hardware UART)
+
+time:
+  - platform: homeassistant       # used by the "Sync AHU clock" button
+    id: ha_time
+    timezone: Europe/Vilnius      # without it ESPHome got UTC from HA and the sync wrote UTC
+
+# ── LilyGO T-CAN485: bring up the RS485 transceiver ─────────────────
+# All three must be driven HIGH from boot — LilyGO's own RS485 example does
+# digitalWrite(..., HIGH) on 16/17/19 (Xinyuan-LilyGO/T-CAN485 example/Arduino/RS485).
+switch:
+  - platform: gpio
+    pin: GPIO16                   # 5V boost that powers the RS485 chip
+    id: rs485_5v_en
+    restore_mode: ALWAYS_ON
+    internal: true
+  - platform: gpio
+    pin: GPIO17                   # RS485_EN (/RE)
+    id: rs485_en
+    restore_mode: ALWAYS_ON
+    internal: true
+  - platform: gpio
+    pin: GPIO19                   # RS485_SE (/SHDN)
+    id: rs485_se
+    restore_mode: ALWAYS_ON
+    internal: true
+
+  # ── AHU on/off (holding 1001) ──
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Power"
+    id: power_sw
+    internal: true                # driven via the Ventilation climate
+    register_type: holding
+    address: 1001
+    use_write_multiple: true      # LMC311 only supports FC16, not FC06
+
+  # ── Boost flavours (one AHU boost underneath; see ensy_climate.h) ──
+  - platform: template
+    name: "Boost"
+    icon: mdi:fan-plus
+    lambda: 'return id(ventilation).boost_running() && !id(ventilation).hood_running();'
+    turn_on_action:
+      - lambda: 'id(ventilation).start_boost(false);'
+    turn_off_action:
+      - lambda: 'id(ventilation).stop_boost();'
+  - platform: template
+    name: "Cooker hood"
+    icon: mdi:stove
+    lambda: 'return id(ventilation).hood_running();'
+    turn_on_action:
+      - lambda: 'id(ventilation).start_boost(true);'
+    turn_off_action:
+      - lambda: 'id(ventilation).stop_boost();'
+
+climate:
+  - platform: ensy_climate
+    id: ventilation
+    name: "Ventilation"
+    current_temperature: extract_t
+    current_humidity: rh
+    heater_capacity: heater_cap
+    power: power_sw
+    mode_select: mode_sel
+    fan_step: fan_sel
+    boost: boost_sel
+    setpoint: setpoint_num
+    boost_minutes: boost_min
+    boost_length: boost_len
+    hood_length: hood_len
+    state_text: state_txt
+    visual:
+      min_temperature: 12
+      max_temperature: 30
+      temperature_step: 0.5
+
+uart:
+  id: mod_uart
+  tx_pin: GPIO22
+  rx_pin: GPIO21
+  baud_rate: 19200
+  parity: EVEN
+  stop_bits: 1
+
+modbus:
+  uart_id: mod_uart
+  turnaround_time: 100ms          # replaces modbus_controller.command_throttle (ESPHome 2026.9+)
+  # no flow_control_pin: the T-CAN485 transceiver is auto-direction
+
+modbus_controller:
+  - id: ensy
+    address: 30                   # LMC311 default node address
+    max_cmd_retries: 2
+    update_interval: 30s
+
+# ── Status LED (onboard WS2812 on GPIO4) ────────────────────────────
+#   red    = no WiFi        blue  = WiFi ok, HA not connected
+#   yellow = HA ok, AHU not answering Modbus     green = all good
+globals:
+  - id: led_state
+    type: int
+    initial_value: "-1"
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_rgb
+    name: "Status LED"
+    pin: GPIO4
+    num_leds: 1
+    chipset: WS2812
+    channel_colors: GRB
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          int s = !id(wifi_id).is_connected() ? 0
+                : !id(api_id).is_connected()  ? 1
+                : (id(ensy)->get_module_offline() || !id(rh).has_state()) ? 2 : 3;
+          if (s == id(led_state)) return;
+          id(led_state) = s;
+          static const float rgb[4][3] = {{1,0,0},{0,0,1},{1,0.6,0},{0,1,0}};
+          auto call = id(status_rgb).turn_on();
+          call.set_rgb(rgb[s][0], rgb[s][1], rgb[s][2]);
+          call.set_brightness(0.25);
+          call.set_transition_length(0);
+          call.perform();
+
+# ── Buttons: one-shot FC16 writes ──────────────────────────────────
+button:
+  - platform: template
+    name: "Reset alarms"          # holding 400 = 255 (clear all)
+    icon: mdi:alarm-light-off
+    on_press:
+      - lambda: |-
+          id(ensy)->queue_command(modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(ensy), 400, 1, std::vector<uint16_t>{255}));
+  - platform: template
+    name: "Sync AHU clock"        # holding 300-305 = s, min, h, day, month, year (HA local time)
+    icon: mdi:clock-check
+    entity_category: config
+    on_press:
+      - lambda: |-
+          auto t = id(ha_time).now();
+          if (!t.is_valid()) { ESP_LOGW("ensy", "clock sync: HA time not valid yet"); return; }
+          ESP_LOGI("ensy", "clock sync -> %04d-%02d-%02d %02d:%02d:%02d", t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+          std::vector<uint16_t> v{t.second, t.minute, t.hour, t.day_of_month, t.month, (uint16_t) t.year};
+          id(ensy)->queue_command(modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(ensy), 300, 6, v));
+
+# ── READ: numeric values ───────────────────────────────────────────
+sensor:
+  # Temperatures (input, °C ×100, signed). On this AHU 208 mirrors 201 and the
+  # heat-pump / DHW / hydronic probes (204-206, 210-214) are not fitted.
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Fresh air temp"        # T1 intake, outside air
+    register_type: read
+    address: 201
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply temp"           # T2 inlet, after recuperator / before heater
+    register_type: read
+    address: 202
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Extract temp"          # T3 room exhaust
+    id: extract_t
+    register_type: read
+    address: 203
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply after heater"   # T7
+    register_type: read
+    address: 207
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Exhaust temp"          # after rotor (AVK / rotor guard) — the real exhaust-side probe
+    register_type: read
+    address: 223
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Room temp (panel)"     # T15 wall panel sensor
+    register_type: read
+    address: 215
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Heater surface temp"   # T9 (OET overheat sensor)
+    register_type: read
+    address: 209
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Controller board temp" # T0
+    register_type: read
+    address: 200
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    entity_category: diagnostic
+
+  # Air quality
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Humidity"
+    register_type: read
+    address: 221
+    id: rh
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "%"
+    device_class: humidity
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "CO2"                   # 0 until a sensor is wired to CN11 (see ensy-ahu-co2-options.md)
+    register_type: read
+    address: 222
+    unit_of_measurement: "ppm"
+    device_class: carbon_dioxide
+    state_class: measurement
+
+  # Fans
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply fan speed"      # holding 201 Output.InletSpeed — the real %
+    register_type: holding
+    address: 201
+    filters: [multiply: 0.01]
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    state_class: measurement
+    icon: mdi:fan
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Exhaust fan speed"     # holding 200 Output.ExhaustSpeed
+    register_type: holding
+    address: 200
+    filters: [multiply: 0.01]
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    state_class: measurement
+    icon: mdi:fan
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply fan step"       # input 230 — manual says %, but it reports the step
+    register_type: read
+    address: 230
+    icon: mdi:fan-speed-1
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Exhaust fan step"      # input 231
+    register_type: read
+    address: 231
+    icon: mdi:fan-speed-1
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Heater capacity"       # holding 202 Output.AirHeatCap
+    id: heater_cap
+    register_type: holding
+    address: 202
+    filters: [multiply: 0.01]
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    state_class: measurement
+    icon: mdi:radiator
+
+  # Control (input 1003, 1201-1206, 1800)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Time in state"
+    register_type: read
+    address: 1003
+    unit_of_measurement: "s"
+    device_class: duration
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply temp request"   # AirTemp.TempInletSet (T7 setpoint the controller targets)
+    register_type: read
+    address: 1201
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Controlled temp"       # AirTemp.TempControl
+    register_type: read
+    address: 1202
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Room temp (controller)" # AirTemp.TempRoom (T15 or T10)
+    register_type: read
+    address: 1203
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Heat recovery efficiency" # AirTemp.EffPct — meaningless while the rotor is off
+    register_type: read
+    address: 1204
+    filters: [multiply: 0.01]
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    state_class: measurement
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Capacity requested"    # AirTemp.CapSet — manual says ×100, raw 19 looks like plain %; verify
+    register_type: read
+    address: 1205
+    unit_of_measurement: "%"
+    state_class: measurement
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Capacity actual"       # AirTemp.CapAct — same scaling caveat
+    register_type: read
+    address: 1206
+    unit_of_measurement: "%"
+    state_class: measurement
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "External heater setpoint" # HeatExtSet
+    register_type: read
+    address: 1800
+    value_type: S_WORD
+    filters: [multiply: 0.01]
+    accuracy_decimals: 1
+    unit_of_measurement: "°C"
+    device_class: temperature
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Boost remaining"
+    lambda: 'return id(ventilation).boost_running() ? id(boost_min).state : 0;'
+    update_interval: 30s
+    unit_of_measurement: "min"
+    icon: mdi:timer-sand
+
+  # Alarms
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Alarm count"           # Alarm.Status bits 0x03
+    register_type: read
+    address: 400
+    bitmask: 0x03
+    icon: mdi:alarm-light
+    entity_category: diagnostic
+
+  # DPT pressure module (not fitted on this unit; kept on request)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Air pressure 1"
+    register_type: read
+    address: 2201
+    unit_of_measurement: "Pa"
+    device_class: pressure
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Modbus protocol version" # input 0
+    register_type: read
+    address: 0
+    entity_category: diagnostic
+
+# ── READ: text (decoded multi-register values) ─────────────────────
+text_sensor:
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Firmware version"      # input 1-3, 2 ASCII chars each → "2.0.20"
+    register_type: read
+    address: 1
+    response_size: 6
+    entity_category: diagnostic
+    lambda: |-
+      std::string out;
+      for (int i = 0; i < 3; i++) {
+        std::string p;
+        for (int j = 0; j < 2; j++) {
+          char c = (char) data[item->offset + 2 * i + j];
+          if (c > ' ') p += c;
+        }
+        out += (i ? "." : "") + p;
+      }
+      return out;
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Mode (actual)"         # input 1001 Control.ModeAct
+    register_type: read
+    address: 1001
+    response_size: 2
+    lambda: |-
+      static const char *const n[] = {"Off", "Heat", "Cool", "Auto", "Service"};
+      uint16_t v = (data[item->offset] << 8) | data[item->offset + 1];
+      return v < 5 ? std::string(n[v]) : "Unknown (" + to_string(v) + ")";
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "State"                 # input 1002 Control.StateDisplay
+    id: state_txt
+    register_type: read
+    address: 1002
+    response_size: 2
+    lambda: |-
+      static const char *const n[] = {"Off", "Shift", "Stop", "Start", "Standby",
+          "Ventilation stop", "Ventilation", "Heating", "Cooling"};
+      uint16_t v = (data[item->offset] << 8) | data[item->offset + 1];
+      if (v <= 8) return std::string(n[v]);
+      switch (v) {
+        case 13: return std::string("Defrost");
+        case 14: return std::string("Frost secure");
+        case 15: return std::string("Service");
+        case 16: return std::string("Alarm");
+      }
+      return "Unknown (" + to_string(v) + ")";
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "AHU clock"             # holding 300-305: s, min, h, day, month, year
+    register_type: holding
+    address: 300
+    response_size: 12
+    entity_category: diagnostic
+    lambda: |-
+      auto r = [&](int i) -> uint16_t { return (data[item->offset + 2*i] << 8) | data[item->offset + 2*i + 1]; };
+      char b[24];
+      snprintf(b, sizeof(b), "%04u-%02u-%02u %02u:%02u:%02u", r(5), r(4), r(3), r(2), r(1), r(0));
+      return std::string(b);
+  # Alarm list (input 401-409): ID (0x7F = display code), DOS date, DOS time
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Alarm 1"
+    register_type: read
+    address: 401
+    response_size: 6
+    icon: mdi:alarm-light
+    lambda: &alarm_decode |-
+      auto r = [&](int i) -> uint16_t { return (data[item->offset + 2*i] << 8) | data[item->offset + 2*i + 1]; };
+      uint16_t code = r(0) & 0x7F, d = r(1), t = r(2);
+      if (code == 0) return std::string("None");
+      char b[40];
+      snprintf(b, sizeof(b), "Code %u · %04u-%02u-%02u %02u:%02u",
+               code, (d >> 9) + 1980, (d >> 5) & 0x0F, d & 0x1F, t >> 11, (t >> 5) & 0x3F);
+      return std::string(b);
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Alarm 2"
+    register_type: read
+    address: 404
+    response_size: 6
+    icon: mdi:alarm-light
+    lambda: *alarm_decode
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Alarm 3"
+    register_type: read
+    address: 407
+    response_size: 6
+    icon: mdi:alarm-light
+    lambda: *alarm_decode
+
+# ── READ: on/off states ────────────────────────────────────────────
+binary_sensor:
+  # Digital inputs (input 100-106)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function input"   # DIN for UF1/UF2 (e.g. cooker hood contact)
+    register_type: read
+    address: 100
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Filter alarm"
+    register_type: read
+    address: 101
+    device_class: problem
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Door open"
+    register_type: read
+    address: 102
+    device_class: door
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Smoke alarm"
+    register_type: read
+    address: 103
+    device_class: smoke
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Motor thermal fuse"
+    register_type: read
+    address: 104
+    device_class: problem
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Heater frost or overheat"
+    register_type: read
+    address: 105
+    device_class: problem
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Airflow alarm"
+    register_type: read
+    address: 106
+    device_class: problem
+
+  # User functions: status only. Writing 600/610 over Modbus is ignored by the
+  # LMC311 (verified 2026-10-08) — they run only from the CN12 UI / KV contacts.
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1 active"
+    register_type: holding
+    address: 600
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2 active"
+    register_type: holding
+    address: 610
+
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Alarm active"          # Alarm.Status bit 0x80
+    register_type: read
+    address: 400
+    bitmask: 0x80
+    device_class: problem
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Running"               # input 1000 Control.RunAct
+    register_type: read
+    address: 1000
+    device_class: running
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Summer mode"           # input 1200 AirTemp.IsSummer
+    register_type: read
+    address: 1200
+    icon: mdi:weather-sunny
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Pressure module online" # input 2200 DPT.InSession
+    register_type: read
+    address: 2200
+    device_class: connectivity
+    entity_category: diagnostic
+
+  # Outputs (holding 100-132) — READ-ONLY on purpose: writing them bypasses the controller
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Air flap"
+    register_type: holding
+    address: 100
+    device_class: opening
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Smoke flap"
+    register_type: holding
+    address: 101
+    device_class: opening
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Bypass opening"
+    register_type: holding
+    address: 102
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Bypass closing"
+    register_type: holding
+    address: 103
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Air heating selected"
+    register_type: holding
+    address: 105
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Heater"
+    register_type: holding
+    address: 106
+    device_class: heat
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Rotor"
+    register_type: holding
+    address: 130
+    device_class: running
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply fan running"
+    register_type: holding
+    address: 131
+    device_class: running
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Exhaust fan running"
+    register_type: holding
+    address: 132
+    device_class: running
+    entity_category: diagnostic
+
+# ── CONTROL: numbers (holding, FC16) ───────────────────────────────
+number:
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Temperature setpoint"
+    id: setpoint_num
+    internal: true                # driven via the Ventilation climate
+    address: 1004                 # Control.TempSet, °C ×100
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 12
+    max_value: 30
+    step: 0.5
+    multiply: 100
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Boost remaining raw"   # PartyModeCountdown, minutes: written before Start = length,
+    id: boost_min                 # during a boost = remaining time (verified 2026-10-08)
+    internal: true
+    address: 550
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 1440
+    step: 1
+    unit_of_measurement: "min"
+
+  # ESP-side lengths for the two boost flavours (kept across reboots)
+  - platform: template
+    name: "Boost length"
+    id: boost_len
+    optimistic: true
+    restore_value: true
+    initial_value: 120
+    min_value: 5
+    max_value: 480
+    step: 5
+    unit_of_measurement: "min"
+    entity_category: config
+  - platform: template
+    name: "Cooker hood length"
+    id: hood_len
+    optimistic: true
+    restore_value: true
+    initial_value: 20
+    min_value: 5
+    max_value: 120
+    step: 5
+    unit_of_measurement: "min"
+    entity_category: config
+
+  # Supply temperature limits (holding 1201-1205, °C ×100)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply min temp summer"
+    address: 1201
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 5
+    max_value: 40
+    step: 0.5
+    multiply: 100
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply min temp winter"
+    address: 1202
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 5
+    max_value: 40
+    step: 0.5
+    multiply: 100
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply max temp summer"
+    address: 1203
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 5
+    max_value: 40
+    step: 0.5
+    multiply: 100
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Supply max temp winter"
+    address: 1204
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 5
+    max_value: 40
+    step: 0.5
+    multiply: 100
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Summer-winter limit"   # outdoor temp where summer mode starts
+    address: 1205
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: 0
+    max_value: 30
+    step: 0.5
+    multiply: 100
+    unit_of_measurement: "°C"
+    entity_category: config
+
+  # Service mode capacity (holding 1006, % ×100)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Service capacity"
+    address: 1006
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 100
+    step: 1
+    multiply: 100
+    unit_of_measurement: "%"
+    entity_category: config
+
+  # Humidity control (holding 1912-1913)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Humidity low limit"    # RH_LimLo, % ×100 (0 = humidity control off?)
+    address: 1912
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 100
+    step: 1
+    multiply: 100
+    unit_of_measurement: "%"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Humidity high timeout"
+    address: 1913
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 600
+    step: 5
+    unit_of_measurement: "min"
+    entity_category: config
+
+  # CO2 control (holding 1921-1922) — only used once a CO2 sensor is on CN11
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "CO2 normal limit"
+    address: 1921
+    register_type: holding
+    use_write_multiple: true
+    min_value: 400
+    max_value: 2000
+    step: 50
+    unit_of_measurement: "ppm"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "CO2 high limit"
+    address: 1922
+    register_type: holding
+    use_write_multiple: true
+    min_value: 400
+    max_value: 2000
+    step: 50
+    unit_of_measurement: "ppm"
+    entity_category: config
+
+  # User function 1 (holding 602-605)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1 duration"
+    address: 602
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 1440
+    step: 1
+    unit_of_measurement: "min"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1 temp"  # Extend function only; whole °C (no scale)
+    address: 604
+    register_type: holding
+    use_write_multiple: true
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1 offset" # Ext heater offset function only; whole °C, signed
+    address: 605
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: -10
+    max_value: 10
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+
+  # User function 2 (holding 612-615)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2 duration"
+    address: 612
+    register_type: holding
+    use_write_multiple: true
+    min_value: 0
+    max_value: 1440
+    step: 1
+    unit_of_measurement: "min"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2 temp"
+    address: 614
+    register_type: holding
+    use_write_multiple: true
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2 offset"
+    address: 615
+    register_type: holding
+    value_type: S_WORD
+    use_write_multiple: true
+    min_value: -10
+    max_value: 10
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+
+# ── CONTROL: selects (holding, FC16) ───────────────────────────────
+select:
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Fan step"
+    id: fan_sel
+    internal: true                # driven via the Ventilation climate
+    address: 1003                 # Control.VentSet
+    use_write_multiple: true
+    optionsmap:
+      "Off": 0
+      "Step 1": 1
+      "Step 2": 2
+      "Step 3": 3
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Mode"
+    id: mode_sel
+    internal: true                # driven via the Ventilation climate
+    address: 1002                 # Control.ModeSet (4 = Service is read-only; use Service mode)
+    use_write_multiple: true
+    optionsmap:
+      "Off": 0
+      "Heat": 1
+      "Cool": 2
+      "Auto": 3
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Boost mode raw"
+    id: boost_sel
+    internal: true                # driven via Boost / Cooker hood switches and climate presets
+    address: 551                  # PartyMode: 1=start, 2=stop
+    use_write_multiple: true
+    optionsmap:
+      "Start": 1
+      "Stop": 2
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Week program"
+    address: 500                  # Program.Select — "4 = Erase" deliberately left out
+    use_write_multiple: true
+    entity_category: config
+    optionsmap:
+      "None": 0
+      "Program 1": 1
+      "Program 2": 2
+      "Program 3": 3
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Service mode"
+    address: 1005                 # Control.ServiceMode
+    use_write_multiple: true
+    entity_category: config
+    optionsmap:
+      "Off": 0
+      "Defrost": 1
+      "Flaps": 2
+      "Inlet": 3
+      "Exhaust": 4
+
+  # User functions: what they do and which fan step they use
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1"
+    address: 601
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: &uf_func
+      "None": 0
+      "Extend": 1
+      "Inlet": 2
+      "Exhaust": 3
+      "External heater offset": 4
+      "Ventilate": 5
+      "Cooker hood": 6
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 1 fan step"
+    address: 603
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: &uf_step
+      "Off": 0
+      "Step 1": 1
+      "Step 2": 2
+      "Step 3": 3
+      "Step 4": 4
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2"
+    address: 611
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: *uf_func
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "User function 2 fan step"
+    address: 613
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: *uf_step
+
+  # Humidity / CO2 fan steps (holding 1910, 1911, 1920)
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Humidity low fan step"   # RH_VentLo (winter)
+    address: 1910
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: &vent_step
+      "Off": 0
+      "Step 1": 1
+      "Step 2": 2
+      "Step 3": 3
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "Humidity high fan step"  # RH_VentHi
+    address: 1911
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: *vent_step
+  - platform: modbus_controller
+    modbus_controller_id: ensy
+    name: "CO2 high fan step"       # CO2_VentHi
+    address: 1920
+    use_write_multiple: true
+    entity_category: config
+    optionsmap: *vent_step
