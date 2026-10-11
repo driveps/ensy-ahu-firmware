@@ -110,6 +110,24 @@ modbus_controller:
     address: 30                   # LMC311 default node address
     max_cmd_retries: 2
     update_interval: 30s
+    on_command_sent:              # after any write, re-read everything so HA shows the result
+      - if:
+          condition:
+            lambda: 'return function_code == 16;'
+          then:
+            - script.execute: refresh_after_write
+
+script:
+  # Restarted by every write, so a burst of writes gives one refresh. Two passes:
+  # 1 s for the setting itself, 5 s for states the AHU takes a moment to apply
+  # (actual mode, fan %, boost countdown).
+  - id: refresh_after_write
+    mode: restart
+    then:
+      - delay: 1s
+      - component.update: ensy
+      - delay: 4s
+      - component.update: ensy
 
 # ── Status LED (onboard WS2812 on GPIO4) ────────────────────────────
 #   red    = no WiFi        blue  = WiFi ok, HA not connected
