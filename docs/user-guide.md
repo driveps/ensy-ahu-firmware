@@ -25,20 +25,20 @@ You only need to set it up once. Updates install by themselves.
 > If you are not comfortable working inside the unit, ask whoever gave you the board
 > to do this part. It takes about 10 minutes.
 
-Inside the unit, find the controller board (LMC311). Next to its USB socket is a
-6-pin connector marked **CN7**. Connect 4 of its pins to the board:
+Inside the unit, find the controller board (LMC311). You need two of its connectors:
+**CN7** (next to the USB socket) for data and ground, and **CN2** for power.
 
-| CN7 pin | What it is | Connect to on the board |
+| Connector and pin | What it is | Connect to on the board |
 |---|---|---|
-| **1** | 12 V power | **VIN** (power in) |
-| **2** | Data A | **A** (RS485 terminal) |
-| **3** | Data B | **B** (RS485 terminal) |
-| **6** | Ground | **GND** |
+| **CN2 pin 1** | 12 V power | **VIN** (power in) |
+| **CN7 pin 2** | Data A | **A** (RS485 terminal) |
+| **CN7 pin 3** | Data B | **B** (RS485 terminal) |
+| **CN7 pin 6** | Ground | **GND** |
 
-- **Leave pins 4 and 5 alone.** They go to the wall panel.
+- **Leave CN7 pins 4 and 5 alone.** They go to the wall panel.
 - Don't swap A and B. If you do, nothing breaks, but the LED stays **yellow**
   (see section 5).
-- The board powers itself from pin 1, so it needs no USB cable or charger.
+- The board powers itself from CN2 pin 1, so it needs no USB cable or charger.
 - Fix the board so it can't touch any metal or moving parts, for example in a small
   plastic box or with a cable tie. Keep it near the outer edge of the unit so the
   WiFi signal gets out.
@@ -86,7 +86,7 @@ Close the unit and switch the breaker back on.
 | 🔵 **Blue** | On WiFi, but Home Assistant isn't connected | Normal for a moment after start. If it stays blue, check that Home Assistant is running, or add the device (section 4). |
 | 🟡 **Yellow** | Home Assistant is fine, but the ventilation unit doesn't answer | Check the wires on CN7. A and B may be swapped. |
 | 🔴 **Red** | No WiFi | First setup: see section 3. Later: the router may be off or its password changed. The `Ensy AHU setup` network comes back so you can enter the new password. |
-| ⚫ **Off** | No power | Check pin 1 (12 V) and pin 6 (GND), and that the unit is switched on. |
+| ⚫ **Off** | No power | Check CN2 pin 1 (12 V) and CN7 pin 6 (GND), and that the unit is switched on. |
 
 ---
 

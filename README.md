@@ -25,7 +25,7 @@ in it is device- or owner-specific.
 
 1. Flash `firmware.factory.bin` from the latest release over USB-C, using
    [web.esphome.io](https://web.esphome.io) in Chrome or Edge.
-2. Wire it: CN7 pin 1 (12 V) → VIN, pin 2 → A, pin 3 → B, pin 6 → GND.
+2. Wire it: CN2 pin 1 (12 V) → VIN; CN7 pin 2 → A, pin 3 → B, pin 6 → GND.
 3. On a phone, join WiFi `Ensy AHU setup` (password `ensy-ahu-setup`), pick the home
    WiFi in the page that opens, and enter its password.
 4. Home Assistant finds "Ensy AHU-400" under Settings → Devices → Discovered. Click
